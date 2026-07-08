@@ -1,42 +1,56 @@
 # CameraFix-NonSamsung
 
-Samsung Camera 15.0.03.35 patched to run on non-Samsung devices.
+Samsung Camera 15.0.03.35 patched for cross-device ROMs (tested: Note 10+ running S24 FE OneUI 7 port by Unica).
 
-## Patches applied
+## Why everything was crashing
 
-| # | Crash | Fix |
-|---|-------|-----|
-| 1 & 3 | `RuntimeException: No defined key` (CameraSettingActivity) | `CameraPreferenceFragment` — return null instead of throwing for unknown setting keys |
-| 2 | `BadForegroundServiceNotificationException` bad icon `0x7f080b31` | `NotificationService` — swapped broken `.bmp` resource for `android.R.drawable.ic_menu_camera` |
-| 4 | `UnsatisfiedLinkError: nativeBlendImage` (WatermarkNode PostProcess) | `WatermarkNode.mergeWatermarkImage` — no-op (return false), skips Samsung-only native lib |
+The S24 FE camera app hardcodes Samsung Analytics event-ID mappings for **S24 FE-specific hardware features**. When running on a different device (Note 10+ with original vendor), every settings page, sub-menu, save option, and widget hits a `RuntimeException` because the S24 FE-specific key → event-ID mapping doesn't exist in the Note 10+ hardware config. This is why **every button** crashed — it's not random; it's the same root cause everywhere.
 
-## Root cause
+There are 4 categories of failures:
 
-Samsung Camera depends on 4 categories of Samsung-only dependencies not present on stock Android:
+| Root Cause | Scope | Fix |
+|---|---|---|
+| S24 FE analytics key mappings missing on Note 10+ hardware | 193 files, every settings interaction | Patch throws → return null/void |
+| Samsung native libs chain-depend on Samsung system libs absent from Note 10+ vendor | 65 JNI files | no-op the callers |
+| Notification icon is Samsung-proprietary `.bmp` (Android 12+ rejects it) | NotificationService | Swap to valid system drawable |
+| Settings key count mismatch crashes app at initialization | AbstractCameraSettings | return-void instead of crash |
 
-1. **Samsung system services** (People API, SecMp, BixbyKey events, SemContextManager) — OS-level, 193 files affected, cannot be bundled in an APK
-2. **Samsung native lib chain** — bundled `.so` files depend on `libsecimaging_pdk.camera.samsung.so` (Samsung system lib in `/system/lib64/`) which does not exist on stock ROMs; breaks all JNI calls in the chain
-3. **Resource format incompatibility** — `saving_notification.bmp` is a Samsung-proprietary format; Android 12+ rejects non-PNG/vector notification icons
-4. **Settings key mapping gaps** — Samsung-specific hardware keys (Bixby, DeX, S Pen shortcuts) have no equivalent in stock Android's `CameraSettings.Key` enum
+## All patches — v2
 
-**Providing the missing libs is not viable** — Samsung's system libs are hardware-tied, compiled against Samsung's camera HAL, and signed with Samsung's keys.
+| # | File | Method | Patch |
+|---|---|---|---|
+| 1a | CameraPreferenceFragment | getOriginalString | return null |
+| 1b | CameraPreferenceFragment | getEventId-style | return null |
+| 2 | NotificationService | notification builder | icon → android.R.drawable.ic_menu_camera |
+| 3 | WatermarkNode | mergeWatermarkImage | return false (skips missing JNI) |
+| 4 | PreferenceSettingFragment | updatePreferenceAttr ×3 | return-void |
+| 5 | SaveOptionsFragment | updatePreferenceAttr ×4 | return-void |
+| 6 | WatermarkFragment | updatePreferenceAttr | return-void |
+| 7 | WidgetCustomFragment | updatePreferenceAttr | return-void |
+| 8 | WidgetWatermarkFragment | updatePreferenceAttr | return-void |
+| 9 | AbstractCameraSettings | initializeDefaultValueGetterMap | return-void (critical startup fix) |
 
 ## Files
 
-- `samsung-camera-fix.zip` — ZIP containing the signed APK
-- `camera_rebuilt-aligned-signed.apk` — Signed APK (v3 signature, debug keystore)
+| File | Description |
+|---|---|
+| `camera_rebuilt_v2-aligned-signed.apk` | **Latest** — v2, all 9 patches, v3 signed |
+| `samsung-camera-fix-v2.zip` | Same APK zipped |
+| `camera_rebuilt-aligned-signed.apk` | v1 — 4 patches only |
+| `samsung-camera-fix.zip` | v1 zipped |
 
 ## Install
 
 ```bash
-adb install camera_rebuilt-aligned-signed.apk
+adb install camera_rebuilt_v2-aligned-signed.apk
 ```
 
-## Build pipeline
+## Build pipeline used
 
 ```
-apktool d camera.apk -o src/       # decompile
+apktool d camera.apk -o src/        # decompile
 # edit smali files
-apktool b src/ -o rebuilt.apk      # rebuild
-uber-apk-signer -a rebuilt.apk ... # align + sign (order: align THEN sign)
+apktool b src/ -o rebuilt.apk       # rebuild
+uber-apk-signer -a rebuilt.apk ...  # zipalign + sign v1/v2/v3 in one step
+# CRITICAL: align THEN sign — signing covers the whole file byte-for-byte
 ```
