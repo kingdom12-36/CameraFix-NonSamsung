@@ -2,59 +2,77 @@
 
 Samsung Camera 15.0.03.35 patched for cross-device ROMs (tested: Note 10+ running S24 FE OneUI 7 port by Unica).
 
-## Why everything was crashing
+## Root cause summary
 
-The S24 FE camera app hardcodes Samsung-specific feature mappings for S24 FE hardware. On a different device (Note 10+ with original vendor), every settings page, sub-menu, and widget crashes because:
+The S24 FE camera app is hardwired to S24 FE hardware signatures across 4 failure categories:
 
-| Root Cause | Fix |
-|---|---|
-| S24 FE analytics key mappings missing on Note 10+ hardware | Patch throws → return null/void |
-| Samsung native JNI libs not in Note 10+ vendor | no-op the callers |
-| Notification icon is Samsung-proprietary `.bmp` | Swap to valid system drawable |
-| Settings key count mismatch crashes app at init | return-void instead of crash |
-| `isDarkScreen()` reads Samsung's `lcd_curtain` setting — Note 10+ display driver sets this to `1` for its own dim feature, which triggers a confusing "turn off Dark Screen?" dialog | Patch to always return false |
-
-## All patches — v3 (latest)
-
-| # | What | Fix |
+| Category | Symptoms | Fix |
 |---|---|---|
-| 1a/b | CameraPreferenceFragment (×2) | return null instead of RuntimeException |
-| 2 | NotificationService | notification icon → android.R.drawable.ic_menu_camera |
+| S24 FE analytics key mappings absent on Note 10+ | Every settings screen/widget/sub-page crashes | `throw RuntimeException` → `return null/void` |
+| Samsung JNI native libs absent from Note 10+ vendor | Watermark crash, bokeh freeze | no-op callers, fix bridge NPEs |
+| Notification icons are Samsung-proprietary drawables | App crashes immediately on photo taken | Swap to `android.R.drawable.ic_menu_camera` |
+| Settings key count mismatch at init | Crash before settings open | `return-void` |
+| `lcd_curtain` system setting misread as "Dark Screen ON" | Confusing popup dialog on every settings open | `isDarkScreen()` always returns false |
+| Note 10+ sw411dp-xxxhdpi gets 22.8dp mode-tab spacing | Mode bar too wide, hard to scroll | Spacing reduced to 10dp |
+| `CameraResolution` lookup fails on Note 10+ resolution set | 0.5× crash, portrait crash | `throw IllegalArgumentException` → `return null` |
+| Post-processing notification uses bad icon | Normal photo capture crashes app | Icon patched in 2 notification classes |
+| `cancelTakePicture()` bridge method throws null | Portrait mode crash on cancel/switch | `throw null` → `return-void` |
+
+---
+
+## All patches — v4 (latest, 29 total)
+
+### Settings crashes (v1–v2)
+| # | File | Fix |
+|---|---|---|
+| 1a/b | CameraPreferenceFragment (×2) | return null |
+| 2 | NotificationService | notification icon → system drawable |
 | 3 | WatermarkNode.mergeWatermarkImage | return false (skips broken JNI) |
-| 4 | PreferenceSettingFragment.updatePreferenceAttr (×3) | return-void |
-| 5 | SaveOptionsFragment.updatePreferenceAttr (×4) | return-void |
-| 6 | WatermarkFragment.updatePreferenceAttr | return-void |
-| 7 | WidgetCustomFragment.updatePreferenceAttr | return-void |
-| 8 | WidgetWatermarkFragment.updatePreferenceAttr | return-void |
-| 9 | AbstractCameraSettings.initializeDefaultValueGetterMap | return-void on key count mismatch |
-| **10** | **SystemSettingsUtil.isDarkScreen()** | **always return false — kills Dark Screen popup** |
-| **11** | **Mode bar spacing (sw411dp-xxxhdpi dimens)** | **22.8dp → 10dp, inner margin 13.7dp → 8dp** |
+| 4–8 | PreferenceSettingFragment, SaveOptionsFragment, WatermarkFragment, WidgetCustomFragment, WidgetWatermarkFragment | return-void on updatePreferenceAttr |
+| 9 | AbstractCameraSettings.initializeDefaultValueGetterMap | return-void |
 
-## Mode bar fix explained
+### UI / UX fixes (v3)
+| # | File | Fix |
+|---|---|---|
+| 10 | SystemSettingsUtil.isDarkScreen() | always return false |
+| 11 | values-sw411dp-xxxhdpi/dimens.xml | mode tab spacing 22.8→10dp, inner margin 13.7→8dp |
 
-The S24 FE app sets `shooting_mode_shortcut_list_view_spacing = 22.8dp` specifically for sw411dp-xxxhdpi devices (Note 10+ falls in this bucket). This makes mode items spread 22.8dp apart — so only ~3 modes are visible at once and the bar feels very wide. Reduced to 10dp so more modes fit on screen simultaneously.
+### Photo capture / lens crashes (v4)
+| # | File | Fix |
+|---|---|---|
+| 12 | PostProcessNotification | setSmallIcon 0x7f080ce2 → 0x01080075 |
+| 13 | PostProcessorLoggingService | setSmallIcon 0x7f080997 → 0x01080075 |
+| 14–22 | CameraResolution (×9 methods) | IllegalArgumentException → return null (wide/ultrawide/live-focus resolution lookups) |
+| 23 | CameraResolution | "not supported picture ratio" → return null |
+| 24 | SingleBokehPhotoMaker.cancelTakePicture() | throw null → return-void |
+| 25 | DualBokehPhotoMaker.cancelTakePicture() | throw null → return-void |
+| 26 | PortraitZoomPhotoMaker.cancelTakePicture() | throw null → return-void |
+| 27–29 | SingleBokehPhotoMaker, DualBokehPhotoMaker, BokehVideoMaker | all null-throw bridge methods → return-void |
+
+---
 
 ## Files
 
-| File | Version | Description |
+| File | Version | Patches |
 |---|---|---|
-| `camera_rebuilt_v3-aligned-signed.apk` | **v3** | Latest — all 11 patches |
-| `samsung-camera-fix-v3.zip` | **v3** | Same, zipped |
+| `camera_rebuilt_v4-aligned-signed.apk` | **v4** | All 29 patches — use this |
+| `samsung-camera-fix-v4.zip` | **v4** | Same, zipped |
+| `camera_rebuilt_v3-aligned-signed.apk` | v3 | 11 patches |
 | `camera_rebuilt_v2-aligned-signed.apk` | v2 | 9 patches |
 | `camera_rebuilt-aligned-signed.apk` | v1 | 4 patches |
 
 ## Install
 
 ```bash
-adb install camera_rebuilt_v3-aligned-signed.apk
+adb install camera_rebuilt_v4-aligned-signed.apk
 ```
 
 ## Build pipeline
 
 ```
 apktool d camera.apk -o src/
-# edit smali + res
+# patch smali + res XML
 apktool b src/ -o rebuilt.apk
-uber-apk-signer -a rebuilt.apk --ks debug.jks ... -o signed/
-# order matters: align THEN sign
+uber-apk-signer -a rebuilt.apk --ks debug.jks --ksAlias androiddebugkey --ksKeyPass android --ksPass android --allowResign -o signed/
+# CRITICAL: zipalign first, THEN sign — uber-apk-signer handles both in one step
 ```
